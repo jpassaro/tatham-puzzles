@@ -62,7 +62,7 @@ enum {
 };
 
 struct game_params {
-    int w, diff, multiplication_only;
+    int w, diff, multiplication_only, hide_ops;
 };
 
 struct clues {
@@ -87,21 +87,22 @@ static game_params *default_params(void)
     ret->w = 6;
     ret->diff = DIFF_NORMAL;
     ret->multiplication_only = FALSE;
+    ret->hide_ops = FALSE;
 
     return ret;
 }
 
 static const struct game_params keen_presets[] = {
-    {  4, DIFF_EASY,         FALSE },
-    {  5, DIFF_EASY,         FALSE },
-    {  5, DIFF_EASY,         TRUE  },
-    {  6, DIFF_EASY,         FALSE },
-    {  6, DIFF_NORMAL,       FALSE },
-    {  6, DIFF_NORMAL,       TRUE  },
-    {  6, DIFF_HARD,         FALSE },
-    {  6, DIFF_EXTREME,      FALSE },
-    {  6, DIFF_UNREASONABLE, FALSE },
-    {  9, DIFF_NORMAL,       FALSE },
+    {  4, DIFF_EASY,         FALSE, FALSE },
+    {  5, DIFF_EASY,         FALSE, FALSE },
+    {  5, DIFF_EASY,         TRUE,  FALSE },
+    {  6, DIFF_EASY,         FALSE, FALSE },
+    {  6, DIFF_NORMAL,       FALSE, FALSE },
+    {  6, DIFF_NORMAL,       TRUE , FALSE },
+    {  6, DIFF_HARD,         FALSE, FALSE },
+    {  6, DIFF_EXTREME,      FALSE, FALSE },
+    {  6, DIFF_UNREASONABLE, FALSE, FALSE },
+    {  9, DIFF_NORMAL,       FALSE, FALSE },
 };
 
 static int game_fetch_preset(int i, char **name, game_params **params)
@@ -115,8 +116,9 @@ static int game_fetch_preset(int i, char **name, game_params **params)
     ret = snew(game_params);
     *ret = keen_presets[i]; /* structure copy */
 
-    sprintf(buf, "%dx%d %s%s", ret->w, ret->w, keen_diffnames[ret->diff],
-	    ret->multiplication_only ? ", multiplication only" : "");
+    sprintf(buf, "%dx%d %s%s%s", ret->w, ret->w, keen_diffnames[ret->diff],
+	    ret->multiplication_only ? ", multiplication only" : "",
+            ret->hide_ops ? ", hide operations" : "");
 
     *name = dupstr(buf);
     *params = ret;
@@ -159,6 +161,11 @@ static void decode_params(game_params *params, char const *string)
 	p++;
 	params->multiplication_only = TRUE;
     }
+
+    if(*p == 'h') {
+        p++;
+        params->hide_ops = TRUE;
+    }
 }
 
 static char *encode_params(const game_params *params, int full)
@@ -167,8 +174,9 @@ static char *encode_params(const game_params *params, int full)
 
     sprintf(ret, "%d", params->w);
     if (full)
-        sprintf(ret + strlen(ret), "d%c%s", keen_diffchars[params->diff],
-		params->multiplication_only ? "m" : "");
+        sprintf(ret + strlen(ret), "d%c%s%s", keen_diffchars[params->diff],
+		params->multiplication_only ? "m" : "",
+		params->hide_ops ? "h" : "");
 
     return dupstr(ret);
 }
@@ -178,7 +186,7 @@ static config_item *game_configure(const game_params *params)
     config_item *ret;
     char buf[80];
 
-    ret = snewn(4, config_item);
+    ret = snewn(5, config_item);
 
     ret[0].name = "Grid size";
     ret[0].type = C_STRING;
@@ -194,8 +202,12 @@ static config_item *game_configure(const game_params *params)
     ret[2].type = C_BOOLEAN;
     ret[2].u.boolean.bval = params->multiplication_only;
 
-    ret[3].name = NULL;
-    ret[3].type = C_END;
+    ret[3].name = "Hide operations";
+    ret[3].type = C_BOOLEAN;
+    ret[3].u.boolean.bval = params->hide_ops;
+
+    ret[4].name = NULL;
+    ret[4].type = C_END;
 
     return ret;
 }
@@ -207,6 +219,7 @@ static game_params *custom_params(const config_item *cfg)
     ret->w = atoi(cfg[0].u.string.sval);
     ret->diff = cfg[1].u.choices.selected;
     ret->multiplication_only = cfg[2].u.boolean.bval;
+    ret->hide_ops = cfg[3].u.boolean.bval;
 
     return ret;
 }
@@ -1101,7 +1114,7 @@ done
 		    cluevals[j] *= grid[i];
 		    break;
 		  case C_SUB:
-		    cluevals[j] = abs(cluevals[j] - grid[i]);
+		    cluevals[j] = labs(cluevals[j] - grid[i]);
 		    break;
 		  case C_DIV:
 		    {
@@ -1501,21 +1514,11 @@ struct game_drawstate {
     char *minus_sign, *times_sign, *divide_sign;
 };
 
-static int check_errors(const game_state *state, long *errors)
-{
-    int w = state->par.w, a = w*w;
-    int i, j, x, y, errs = FALSE;
+static int check_clues_with_ops(const game_state *state, long *errors, int *full) {
+    int i, j, errs = FALSE, a = state->par.w * state->par.w;
     long *cluevals;
-    int *full;
 
     cluevals = snewn(a, long);
-    full = snewn(a, int);
-
-    if (errors)
-	for (i = 0; i < a; i++) {
-	    errors[i] = 0;
-	    full[i] = TRUE;
-	}
 
     for (i = 0; i < a; i++) {
 	long clue;
@@ -1534,7 +1537,7 @@ static int check_errors(const game_state *state, long *errors)
 		cluevals[j] *= state->grid[i];
 		break;
 	      case C_SUB:
-		cluevals[j] = abs(cluevals[j] - state->grid[i]);
+		cluevals[j] = labs(cluevals[j] - state->grid[i]);
 		break;
 	      case C_DIV:
 		{
@@ -1565,6 +1568,80 @@ static int check_errors(const game_state *state, long *errors)
     }
 
     sfree(cluevals);
+
+    return errs;
+}
+
+static int check_clues_without_ops(const game_state *state, long *errors, int *full) {
+    int i, j, errs = FALSE, a = state->par.w * state->par.w;
+    long *cluevalsadd, *cluevalssub, *cluevalsmul, *cluevalsdiv;
+
+    cluevalsadd = snewn(a, long);
+    cluevalssub = snewn(a, long);
+    cluevalsmul = snewn(a, long);
+    cluevalsdiv = snewn(a, long);
+
+    for (i = 0; i < a; i++) {
+        digit gridval = state->grid[i];
+        j = dsf_canonify(state->clues->dsf, i);
+        if (j == i) {
+            cluevalsadd[i] = cluevalssub[i] = cluevalsmul[i] = cluevalsdiv[i] = gridval;
+        } else {
+            cluevalsadd[j] += gridval;
+            cluevalssub[j] -= gridval;
+            cluevalsmul[j] *= gridval;
+            long d1 = min(cluevalsdiv[j], gridval);
+            long d2 = max(cluevalsdiv[j], gridval);
+            if (d1 == 0 || d2 % d1 != 0)
+                cluevalsdiv[j] = 0;
+            else
+                cluevalsdiv[j] = d2 / d1;
+        }
+
+        if (!gridval)
+            full[j] = FALSE;
+    }
+
+    for (i = 0; i < a; i++) {
+        j = dsf_canonify(state->clues->dsf, i);
+        if (j == i) {
+            long expected = state->clues->clues[j] & ~CMASK;
+            if (expected != cluevalsadd[j] && expected != cluevalssub[j]
+                    && expected != cluevalsmul[j] && expected != cluevalsdiv[j]) {
+                errs = TRUE;
+                if (errors && full[j])
+                    errors[j] |= DF_ERR_CLUE;
+            }
+        }
+    }
+
+    sfree(cluevalsadd);
+    sfree(cluevalssub);
+    sfree(cluevalsmul);
+    sfree(cluevalsdiv);
+
+    return errs;
+}
+
+static int check_errors(const game_state *state, long *errors)
+{
+    int w = state->par.w, a = w*w;
+    int x, y, errs = FALSE;
+    int *full;
+
+    full = snewn(a, int);
+
+    if (errors)
+	for (x = 0; x < a; x++) {
+	    errors[x] = 0;
+	    full[x] = TRUE;
+	}
+
+    if (state->par.hide_ops)
+        errs = check_clues_without_ops(state, errors, full);
+    else
+        errs = check_clues_with_ops(state, errors, full);
+
     sfree(full);
 
     for (y = 0; y < w; y++) {
