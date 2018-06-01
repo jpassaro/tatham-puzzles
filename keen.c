@@ -62,7 +62,7 @@ enum {
 };
 
 struct game_params {
-    int w, diff, multiplication_only;
+    int w, diff, multiplication_only, hex;
 };
 
 struct clues {
@@ -87,21 +87,22 @@ static game_params *default_params(void)
     ret->w = 6;
     ret->diff = DIFF_NORMAL;
     ret->multiplication_only = FALSE;
+    ret->hex = FALSE;
 
     return ret;
 }
 
 static const struct game_params keen_presets[] = {
-    {  4, DIFF_EASY,         FALSE },
-    {  5, DIFF_EASY,         FALSE },
-    {  5, DIFF_EASY,         TRUE  },
-    {  6, DIFF_EASY,         FALSE },
-    {  6, DIFF_NORMAL,       FALSE },
-    {  6, DIFF_NORMAL,       TRUE  },
-    {  6, DIFF_HARD,         FALSE },
-    {  6, DIFF_EXTREME,      FALSE },
-    {  6, DIFF_UNREASONABLE, FALSE },
-    {  9, DIFF_NORMAL,       FALSE },
+    {  4, DIFF_EASY,         FALSE, FALSE },
+    {  5, DIFF_EASY,         FALSE, FALSE },
+    {  5, DIFF_EASY,         TRUE,  FALSE },
+    {  6, DIFF_EASY,         FALSE, FALSE },
+    {  6, DIFF_NORMAL,       FALSE, FALSE },
+    {  6, DIFF_NORMAL,       TRUE , FALSE },
+    {  6, DIFF_HARD,         FALSE, FALSE },
+    {  6, DIFF_EXTREME,      FALSE, FALSE },
+    {  6, DIFF_UNREASONABLE, FALSE, FALSE },
+    {  9, DIFF_NORMAL,       FALSE, FALSE },
 };
 
 static int game_fetch_preset(int i, char **name, game_params **params)
@@ -115,8 +116,9 @@ static int game_fetch_preset(int i, char **name, game_params **params)
     ret = snew(game_params);
     *ret = keen_presets[i]; /* structure copy */
 
-    sprintf(buf, "%dx%d %s%s", ret->w, ret->w, keen_diffnames[ret->diff],
-	    ret->multiplication_only ? ", multiplication only" : "");
+    sprintf(buf, "%dx%d %s%s%s", ret->w, ret->w, keen_diffnames[ret->diff],
+	    ret->multiplication_only ? ", multiplication only" : "",
+            ret->hex ? ", hex mode" : "");
 
     *name = dupstr(buf);
     *params = ret;
@@ -159,6 +161,11 @@ static void decode_params(game_params *params, char const *string)
 	p++;
 	params->multiplication_only = TRUE;
     }
+
+    if (*p == 'x') {
+        p++;
+        params->hex = TRUE;
+    }
 }
 
 static char *encode_params(const game_params *params, int full)
@@ -167,8 +174,9 @@ static char *encode_params(const game_params *params, int full)
 
     sprintf(ret, "%d", params->w);
     if (full)
-        sprintf(ret + strlen(ret), "d%c%s", keen_diffchars[params->diff],
-		params->multiplication_only ? "m" : "");
+        sprintf(ret + strlen(ret), "d%c%s%s", keen_diffchars[params->diff],
+		params->multiplication_only ? "m" : "",
+		params->hex ? "x" : "");
 
     return dupstr(ret);
 }
@@ -178,7 +186,7 @@ static config_item *game_configure(const game_params *params)
     config_item *ret;
     char buf[80];
 
-    ret = snewn(4, config_item);
+    ret = snewn(5, config_item);
 
     ret[0].name = "Grid size";
     ret[0].type = C_STRING;
@@ -194,8 +202,12 @@ static config_item *game_configure(const game_params *params)
     ret[2].type = C_BOOLEAN;
     ret[2].u.boolean.bval = params->multiplication_only;
 
-    ret[3].name = NULL;
-    ret[3].type = C_END;
+    ret[3].name = "Hexadecimal mode";
+    ret[3].type = C_BOOLEAN;
+    ret[3].u.boolean.bval = params->hex;
+
+    ret[4].name = NULL;
+    ret[4].type = C_END;
 
     return ret;
 }
@@ -207,14 +219,17 @@ static game_params *custom_params(const config_item *cfg)
     ret->w = atoi(cfg[0].u.string.sval);
     ret->diff = cfg[1].u.choices.selected;
     ret->multiplication_only = cfg[2].u.boolean.bval;
+    ret->hex = cfg[3].u.boolean.bval;
 
     return ret;
 }
 
 static const char *validate_params(const game_params *params, int full)
 {
-    if (params->w < 3 || params->w > 9)
-        return "Grid size must be between 3 and 9";
+    if (params->w < 3 || params->w > 15)
+        return "Grid size must be between 3 and 16";
+    if (params->w > 9 && !params->hex)
+        return "Grid size larger than 9 requires hexadecimal mode";
     if (params->diff >= DIFFCOUNT)
         return "Unknown difficulty rating";
     return NULL;
@@ -1670,8 +1685,17 @@ static char *interpret_move(const game_state *state, game_ui *ui,
 
     if (ui->hshow &&
 	((button >= '0' && button <= '9' && button - '0' <= w) ||
+         (button >= 'a' && button <= 'f' && button - 'a' + 10 <= w) ||
+         (button >= 'A' && button <= 'F' && button - 'A' + 10 <= w) ||
 	 button == CURSOR_SELECT2 || button == '\b')) {
-	int n = button - '0';
+	int n;
+        if (button >= '0' && button <= '9') {
+           n = button - '0';
+        } else if (button >= 'a' && button <= 'f') {
+            n = button - 'a' + 10;
+        } else if (button >= 'A' && button <= 'F') {
+            n = button - 'A' + 10;
+        }
 	if (button == CURSOR_SELECT2 || button == '\b')
 	    n = 0;
 
@@ -1682,7 +1706,7 @@ static char *interpret_move(const game_state *state, game_ui *ui,
         if (ui->hpencil && state->grid[ui->hy*w+ui->hx])
             return NULL;
 
-	sprintf(buf, "%c%d,%d,%d",
+	sprintf(buf, "%c%d,%d,%x",
 		(char)(ui->hpencil && n > 0 ? 'P' : 'R'), ui->hx, ui->hy, n);
 
         if (!ui->hcursor) ui->hshow = 0;
@@ -1722,7 +1746,7 @@ static game_state *execute_move(const game_state *from, const char *move)
 
 	return ret;
     } else if ((move[0] == 'P' || move[0] == 'R') &&
-	sscanf(move+1, "%d,%d,%d", &x, &y, &n) == 3 &&
+	sscanf(move+1, "%d,%d,%x", &x, &y, &n) == 3 &&
 	x >= 0 && x < w && y >= 0 && y < w && n >= 0 && n <= w) {
 
 	ret = dup_game(from);
@@ -1839,7 +1863,7 @@ static void game_free_drawstate(drawing *dr, game_drawstate *ds)
 }
 
 static void draw_tile(drawing *dr, game_drawstate *ds, struct clues *clues,
-		      int x, int y, long tile, int only_one_op)
+		      int x, int y, long tile, int only_one_op, int hex)
 {
     int w = clues->w /* , a = w*w */;
     int tx, ty, tw, th;
@@ -1908,12 +1932,15 @@ static void draw_tile(drawing *dr, game_drawstate *ds, struct clues *clues,
 	 * it's possible to type in game IDs from elsewhere, so I
 	 * want to display them right if so.
 	 */
-	sprintf (str, "%ld%s", clueval,
-		 (size == 1 || only_one_op ? "" :
-		  cluetype == C_ADD ? "+" :
-		  cluetype == C_SUB ? ds->minus_sign :
-		  cluetype == C_MUL ? ds->times_sign :
-		  /* cluetype == C_DIV ? */ ds->divide_sign));
+        char const *op = (size == 1 || only_one_op ? "" :
+                          cluetype == C_ADD ? "+" :
+                          cluetype == C_SUB ? ds->minus_sign :
+                          cluetype == C_MUL ? ds->times_sign :
+                          /* cluetype == C_DIV ? */ ds->divide_sign);
+	if (hex)
+            sprintf (str, "%lX%s", clueval, op);
+	else
+            sprintf (str, "%ld%s", clueval, op);
 	draw_text(dr, tx + GRIDEXTRA * 2, ty + GRIDEXTRA * 2 + TILESIZE/4,
 		  FONT_VARIABLE, TILESIZE/4, ALIGN_VNORMAL | ALIGN_HLEFT,
 		  (tile & DF_ERR_CLUE ? COL_ERROR : COL_GRID), str);
@@ -1921,8 +1948,9 @@ static void draw_tile(drawing *dr, game_drawstate *ds, struct clues *clues,
 
     /* new number needs drawing? */
     if (tile & DF_DIGIT_MASK) {
+        int n = tile & DF_DIGIT_MASK;
 	str[1] = '\0';
-	str[0] = (tile & DF_DIGIT_MASK) + '0';
+	str[0] = n > 9 ? (n - 10 + 'A') :  (n + '0');
 	draw_text(dr, tx + TILESIZE/2, ty + TILESIZE/2,
 		  FONT_VARIABLE, TILESIZE/2, ALIGN_VCENTRE | ALIGN_HCENTRE,
 		  (tile & DF_ERR_LATIN) ? COL_ERROR : COL_USER, str);
@@ -2015,7 +2043,7 @@ static void draw_tile(drawing *dr, game_drawstate *ds, struct clues *clues,
 		    int dx = j % pw, dy = j / pw;
 
 		    str[1] = '\0';
-		    str[0] = i + '0';
+		    str[0] = i > 9 ? (i - 10 + 'A') : (i + '0');
 		    draw_text(dr, pl + fontsize * (2*dx+1) / 2,
 			      pt + fontsize * (2*dy+1) / 2,
 			      FONT_VARIABLE, fontsize,
@@ -2083,7 +2111,8 @@ static void game_redraw(drawing *dr, game_drawstate *ds,
 	    if (ds->tiles[y*w+x] != tile) {
 		ds->tiles[y*w+x] = tile;
 		draw_tile(dr, ds, state->clues, x, y, tile,
-			  state->par.multiplication_only);
+			  state->par.multiplication_only,
+                          state->par.hex);
 	    }
 	}
     }
